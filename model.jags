@@ -1,0 +1,320 @@
+### Multi-state model to estimate annual HPV disease burden, ensuring correct propagation of uncertainty from all data sources to outcomes ###
+
+model {
+
+  # Priors/specification of PAF
+  for ( y in 1 : M ) {
+
+   OR.ORO[2,y] ~ dbeta(OR.ORO.a,OR.ORO.b)     # prior on odds ratio (female vs male sex), for PAF for ORO site (Rietbergen et al 2013)
+   OR.ORO[1,y] <- 1/OR.ORO[2,y]               # OR for male vs female sex is simply the inverse odds ratio
+
+   PAF.ORO[y] ~ dbeta(PAF.a[1,y,5],PAF.b[1,y,5])
+   term.a.ORO[1,y] <- (1 - OR.ORO[1,y])
+   term.a.ORO[2,y] <- (1 - OR.ORO[2,y])
+   term.b.ORO[1,y] <- (1 + OR.ORO[1,y] - 2*PAF.ORO[y] + 2*OR.ORO[1,y]*PAF.ORO[y])
+   term.b.ORO[2,y] <- (1 + OR.ORO[2,y] - 2*PAF.ORO[y] + 2*OR.ORO[2,y]*PAF.ORO[y])
+   term.c.ORO[1,y] <- (-2*OR.ORO[1,y]*PAF.ORO[y])
+   term.c.ORO[2,y] <- (-2*OR.ORO[2,y]*PAF.ORO[y])
+   PAF[1,y,5] <- (-term.b.ORO[1,y]+sqrt(pow(term.b.ORO[1,y],2) - 4*term.a.ORO[1,y]*term.c.ORO[1,y]))/(2*term.a.ORO[1,y])
+   PAF[2,y,5] <- (-term.b.ORO[2,y]+sqrt(pow(term.b.ORO[2,y],2) - 4*term.a.ORO[2,y]*term.c.ORO[2,y]))/(2*term.a.ORO[2,y])
+
+   for ( g in 1 : 2 ) {
+    for ( s in 1 : 4 ) {  # exclude ORO site from all-sites loop, as PAF inferred above
+      PAF[g,y,s] ~ dbeta(PAF.a[g,y,s],PAF.b[g,y,s])
+    }
+    for ( s in 6 : N_SITES ) {
+      PAF[g,y,s] ~ dbeta(PAF.a[g,y,s],PAF.b[g,y,s])
+    }
+   }
+  }
+
+
+  # Adjust both male and female ORO CFRs, for time-independent HR for HPV+. USE SAME METHOD FOR HR AS FOR ORs (BELOW)
+  HR.ORO ~ dbeta(HR.ORO.a,HR.ORO.b)           # encode HR for HPV+
+  HR.OC ~ dbeta(HR.OC.a,HR.OC.b)
+
+  for( g in 1 : 2 ) {
+   term.a.ORO.HR[g] <- (1 - HR.ORO);  term.b.ORO.HR[g] <- (1 + HR.ORO - 2*cfr[g,5] + 2*HR.ORO*cfr[g,5])
+   term.c.ORO.HR[g] <- (-2*HR.ORO*cfr[g,5])
+   term.a.OC.HR[g] <- (1 - HR.OC);  term.b.OC.HR[g] <- (1 + HR.OC - 2*cfr[g,6] + 2*HR.OC*cfr[g,6])
+   term.c.OC.HR[g] <- (-2*HR.OC*cfr[g,6])
+   # Adjust ORO (& OC) site CFRs for the [time-independent] HR for HPV+
+   CFR[g,5] <- (-term.b.ORO.HR[g]+sqrt(pow(term.b.ORO.HR[g],2) - 4*term.a.ORO.HR[g]*term.c.ORO.HR[g]))/(2*term.a.ORO.HR[g])
+   CFR[g,6] <- (-term.b.OC.HR[g]+sqrt(pow(term.b.OC.HR[g],2) - 4*term.a.OC.HR[g]*term.c.OC.HR[g]))/(2*term.a.OC.HR[g])
+  }
+
+  # Fill out CFR for sites other than ORO and OC, using cfr vals supplied as data
+  for( s in 1 : 4) {
+   CFR[2,s] <- cfr[2,s]
+  }
+  CFR[1,4] <- cfr[1,4]
+  CFR[1,7] <- cfr[1,7]
+  CFR[2,7] <- cfr[2,7]
+  CFR[1,8] <- cfr[1,8]
+  # Sex-inapplicable nodes (have NA in the data..):
+  CFR[2,8] <- 0
+  CFR[1,1] <- 0  # these 4 lines added for JAGS!
+  CFR[1,2] <- 0
+  CFR[1,3] <- 0
+
+  ## Project GW incidence, backward *only*
+  for( g in 1 : 2 ) {
+   beta0.GW[g] ~ dnorm(0,0.001)      # flat priors
+   beta1.GW[g] ~ dnorm(0,0.001)
+
+   for ( y in (14) : (23) ) {   # fit to 10 years, 2002-2011 (indices = 14, 23)
+    cases.tot.GW[g,y] ~ dpois(inc.tot.GW[g,y])             # assume cases are Poisson distributed
+    log(inc.tot.GW[g,y]) <- beta0.GW[g] + beta1.GW[g]*y + log(pop.tot[g,y])  # NB. actual inc data for 2002-11 *not* used in YLD!
+   }
+   for (y in 1 : (13)) {      # back-predict for 13-year period from 1989 through 2001  # (indices = 1, 13)
+    lambda.GW[g,y] <- exp(beta0.GW[g] + beta1.GW[g]*y) * pop.tot[g,y]
+    inc.tot.GW[g,y] ~ dpois(lambda.GW[g,y])                # sample from posterior predictive Poisson
+   }
+
+   # As incidence from 2012-20 & 2021 onwards is provided as 'data' (actually, values for 2021-22 were projected, based on regr model fit to 2012-20), use it for YLD
+   for ( y in (24) : M ) {                     # (indices = 24 : N_YEARS  [2012 : 2022])
+    inc.tot.GW[g,y] ~ dgamma(0.001,0.001)                  # flat prior
+    cases.tot.GW[g,y] ~ dpois(inc.tot.GW[g,y])             # this should fill in inc.tot.GW[,2012:M]...
+   }
+
+   for (y in 1 : M) {           # allocate total incidence per sex and year across only the relevant age-groups
+    for ( a in 4 : (N_AGE_GROUPS-5) ) {   # cases are supplied for 11 age-groups only
+     inc.GW[g,a,y] <- (inc.tot.GW[g,y] *(pop[1,a,y]/sum(pop[g,4:(N_AGE_GROUPS-5),y])))
+    }
+   }
+
+   # Now fill in younger and older age-groups with zero
+   for(y in 1 : M) {
+    for ( a in 1 : 3 ) {
+     inc.GW[g,a,y] <- 0
+    }
+    for ( a in (N_AGE_GROUPS-4) : N_AGE_GROUPS ) {
+      inc.GW[g,a,y] <- 0
+    }
+   }
+  }
+
+  # Assume cases (both cases not used and cases used for fitting trend) are Poisson distributed
+  for ( y in 1 : M ) {
+   inc.tot.CIN23[y] ~ dgamma(0.001,0.001)   # flat prior
+   cases.tot.CIN23[y] ~ dpois(inc.tot.CIN23[y])
+  }
+
+  # Allocate incident cases across age-groups, period 1989-M
+  #  USE ACTUAL OBSERVED (NOT FITTED!) INC CIN-2/3 CASES IN 2005 t/m M TO FEED YLD
+  for ( y in 1 : M ) {                # using *actual* data for whole period, including 5-year fitting period
+    for ( a in (N_AGE_GROUPS-12) : (N_AGE_GROUPS-7) ) {    # allocate; cases supplied for 6 age-groups only
+     inc.CIN23[a,y] <- (inc.tot.CIN23[y] * alloc.CIN23[a])
+    }
+  }
+
+  # Now fill in younger and older age-groups with zero
+  for(y in 1 : M) {
+   for ( a in 1 : (N_AGE_GROUPS-13) ) {
+    inc.CIN23[a,y] <- 0
+   }
+   for ( a in (N_AGE_GROUPS-6) : N_AGE_GROUPS ) {
+     inc.CIN23[a,y] <- 0
+   }
+  }
+
+  # Use cancer case data summed over all ages (so INCLUDE Poisson error in Crs for annual & avg DALYs), for period 1989 t/m M *only*
+  # Flat priors; restrict inc.tot.m|f params to *only* existing sites for each sex; avoid 'update error for node inc[1,1,1]'
+  for ( y in 1 : M ) {
+    for ( s in 1 : 5 ) {      # males have 5 sites
+      inc.tot.m[y,s] ~ dgamma(0.001,0.001)
+    }
+    for ( s in 1 : 7 ) {     # females have 7 sites
+      inc.tot.f[y,s] ~ dgamma(0.001,0.001)
+    }
+  }
+  for ( y in 1 : M ) {
+    for ( s in 4 : N_SITES ) {
+      cases.tot[1,y,s] ~ dpois(inc.tot.m[y,(s-3)])   # assume cases are Poisson distributed
+      YLD.tot[1,y,s] <- (inc.tot.m[y,(s-3)]*PAF[1,y,s]*dwtdd.tot[1,s])
+     #INC.tot[1,y,s] <- (inc.tot.m[y,(s-3)]*PAF[1,y,s])            # *** TEMP FOR TESSA
+     #DTHS.tot[1,y,s] <- (inc.tot.m[y,(s-3)]*PAF[1,y,s]*CFR[1,s])  # *** TEMP FOR TESSA
+      YLL.tot[1,y,s] <- (inc.tot.m[y,(s-3)]*PAF[1,y,s]*CFR[1,s]*avgN_YEARSlost.tot[1,s])
+      DALY.tot[1,y,s] <- (YLL.tot[1,y,s] + YLD.tot[1,y,s])
+    }
+    for ( s in 1 : (N_SITES-1) ) {
+      cases.tot[2,y,s] ~ dpois(inc.tot.f[y,s])       # assume cases are Poisson distributed
+      YLD.tot[2,y,s] <- (inc.tot.f[y,s]*PAF[2,y,s]*dwtdd.tot[2,s])
+     #INC.tot[2,y,s] <- (inc.tot.f[y,s]*PAF[2,y,s])            # *** TEMP FOR TESSA
+     #DTHS.tot[2,y,s] <- (inc.tot.f[y,s]*PAF[2,y,s]*CFR[2,s])  # *** TEMP FOR TESSA
+      YLL.tot[2,y,s] <- (inc.tot.f[y,s]*PAF[2,y,s]*CFR[2,s]*avgN_YEARSlost.tot[2,s])
+      DALY.tot[2,y,s] <- (YLL.tot[2,y,s] + YLD.tot[2,y,s])
+    }
+    # Fill unused cells with zeros to avoid compile-time error 'variable ... is not defined'
+    for ( s in 1 : 3 ) {
+      YLD.tot[1,y,s] <- 0;  YLL.tot[1,y,s] <- 0;  DALY.tot[1,y,s] <- 0
+     #INC.tot[1,y,s] <- 0;  DTHS.tot[1,y,s] <- 0   # *** TEMP FOR TESSA
+    }
+    YLD.tot[2,y,N_SITES] <- 0;  YLL.tot[2,y,N_SITES] <- 0;  DALY.tot[2,y,N_SITES] <- 0;
+   #INC.tot[2,y,N_SITES] <- 0;  DTHS.tot[2,y,N_SITES] <- 0   # *** TEMP FOR TESSA
+  }
+
+  # First estimate YLD due to genital warts  NB. NON-ZERO INC DATA ONLY PRESENT IN 11 AGE-GROUPS! [ 4:(N_AGE_GROUPS-5) ]
+  for ( y in 1 : M ) {
+    for ( g in 1 : 2 ) {
+      for ( a in 4 : (N_AGE_GROUPS-5) ) {
+        YLD.GW[g,a,y] <- (inc.GW[g,a,y]*0.03*0.73)        # dw=0.03; dd=0.73
+      }
+      # Fill unused cells with zeros to avoid compile error 'variable ... is not defined'
+      for ( a in 1 : 3 ) {
+        YLD.GW[g,a,y] <- 0
+      }
+      for ( a in (N_AGE_GROUPS-4) : N_AGE_GROUPS ) {
+        YLD.GW[g,a,y] <- 0
+      }
+    }
+  }
+
+  # Second, estimate YLD due to CIN23  NB. NON-ZERO INC DATA ONLY PRESENT IN 6 AGE-GROUPS! [(N_AGE_GROUPS-12):(N_AGE_GROUPS-7)]
+  for ( y in 1 : M ) {
+    for ( a in (N_AGE_GROUPS-12) : (N_AGE_GROUPS-7) ) {
+      YLD.CIN23[2,a,y] <- (inc.CIN23[a,y]*0.07*0.5)        # dw=0.01; dd=0.5
+    }
+    # Fill unused cells with zeros to avoid compile error 'variable ... is not defined'
+    for ( a in 1 : (N_AGE_GROUPS-13) ) {
+      YLD.CIN23[2,a,y] <- 0
+    }
+    for ( a in (N_AGE_GROUPS-6) : N_AGE_GROUPS ) {
+      YLD.CIN23[2,a,y] <- 0
+    }
+    for ( a in 1 : N_AGE_GROUPS ) {    # and is always 0 for males
+      YLD.CIN23[1,a,y] <- 0
+    }
+  }
+
+
+  ## Replace NA with zero for sex-specific sites - JAGS change
+  for ( s in 1 : 3 ) {
+     avgN_YEARSlost.tot[1,s] <- 0
+     for ( a in 1 : N_AGE_GROUPS ) {
+       avgN_YEARSlost[1,a,s] <- 0
+       dwtdd[1,a,s] <- 0
+     }
+  }
+  avgN_YEARSlost.tot[2,8] <- 0
+  for ( a in 1 : N_AGE_GROUPS ) {
+    avgN_YEARSlost[2,a,8] <- 0
+    dwtdd[2,a,8] <- 0
+  }
+
+  # Calc YLD, YLL & DALY separately for each stratum of time x sex x site x and age-group
+  for ( y in 1 : M ) {
+    for ( g in 1 : 2 ) {
+     for ( s in 1 : N_SITES ) {
+      for ( a in 1 : N_AGE_GROUPS ) {
+        YLD[g,a,y,s] <- (inc[g,a,y,s]*PAF[g,y,s]*dwtdd[g,a,s])
+        YLL[g,a,y,s] <- (inc[g,a,y,s]*PAF[g,y,s]*CFR[g,s]*avgN_YEARSlost[g,a,s])
+        DALY[g,a,y,s] <- (YLL[g,a,y,s] + YLD[g,a,y,s])
+      }
+     }
+    }
+  }
+
+  ## Now compute aggregate vars, for various plots and results tables
+  # Sum over all ages (needed for credible intervals for Table and Fig 1 (and other figs which also avg over site or over time))
+  for ( g in 1 : 2 ) {
+   for ( s in 1 : N_SITES ) {
+    for ( y in 1 : M ) {
+      YLD.all[g,y,s] <- YLD.tot[g,y,s]         # calculated using incidence data that are supplied already summed over age
+      YLL.all[g,y,s] <- YLL.tot[g,y,s]
+     #INC.all[g,y,s] <- INC.tot[g,y,s]     # *** TEMP FOR TESSA
+     #DTHS.all[g,y,s] <- DTHS.tot[g,y,s]   # *** TEMP FOR TESSA
+      DALY.all[g,y,s] <- DALY.tot[g,y,s]
+      # UNCOMMENT 3 lines BELOW TO REPLACE SUMMATION (ABOVE) THAT USES DATA/NODES (*.tot[]) ALREADY SUMMED OVER AGE (AND SO INCLUDE POISSON ERROR)
+      #YLD.all[g,y,s] <- sum(YLD[g,,y,s])      # sum over age, calc sep. by site, for temporal trend est and avg-over-time only
+      #YLL.all[g,y,s] <- sum(YLL[g,,y,s])
+      #DALY.all[g,y,s] <- sum(DALY[g,,y,s])
+    }
+   }
+  }
+
+  # And then sum over site (SPECIFYIN_AGE_GROUPS RAN_AGE_GROUPSE 1:N_SITES VITAL! CAN'T JUST USE ',]' NOTATION); for cancers, store in site index '9'
+  for ( y in 1 : M ) {
+   for ( g in 1 : 2 ) {
+    YLD.all.CIN23[g,y] <- sum(YLD.CIN23[g,1:N_AGE_GROUPS,y])
+    YLD.all.GW[g,y] <- sum(YLD.GW[g,1:N_AGE_GROUPS,y])
+    YLD.all[g,y,(N_SITES+1)] <- sum(YLD.all[g,y,1:N_SITES]) + YLD.all.GW[g,y] + YLD.all.CIN23[g,y]   # make sure to add YLD for GW & CIN!!
+    YLL.all[g,y,(N_SITES+1)] <- sum(YLL.all[g,y,1:N_SITES])   # NB. with sum(), cannot sum over more than 1 'empty' index
+   #INC.all[g,y,(N_SITES+1)] <- sum(INC.all[g,y,1:N_SITES])   # *** TEMP FOR TESSA
+   #DTHS.all[g,y,(N_SITES+1)] <- sum(DTHS.all[g,y,1:N_SITES])   # *** TEMP FOR TESSA
+    DALY.all[g,y,(N_SITES+1)] <- sum(DALY.all[g,y,1:N_SITES]) + YLD.all.GW[g,y] + YLD.all.CIN23[g,y]
+
+    # ADHOC var for suppl plot/table only, exclude OC & LA sites from aggr. total
+    YLD.all.exclOCLA[g,y] <- sum(YLD.all[g,y,1:5]) + YLD.all[g,y,N_SITES] + YLD.all.GW[g,y] + YLD.all.CIN23[g,y]  # add YLD for GW & CIN!!
+    YLL.all.exclOCLA[g,y] <- sum(YLL.all[g,y,1:5]) + YLL.all[g,y,N_SITES]
+    DALY.all.exclOCLA[g,y] <- sum(DALY.all[g,y,1:5]) + DALY.all[g,y,N_SITES] + YLD.all.GW[g,y] + YLD.all.CIN23[g,y] # and add PE site
+   }
+   # ADHOC var for plot (Fig 1c) and needed for calc of average-over-time: exclude cervix site cancers from aggregated total
+   YLD.all.exclCE[y] <- sum(YLD.all[2,y,2:N_SITES]) + YLD.all.GW[2,y] + YLD.all.CIN23[2,y]   # make sure to add YLD for GW & CIN!!
+   YLL.all.exclCE[y] <- sum(YLL.all[2,y,2:N_SITES])
+   DALY.all.exclCE[y] <- sum(DALY.all[2,y,2:N_SITES]) + YLD.all.GW[2,y] + YLD.all.CIN23[2,y]
+  }
+  # Summed over all ages, mean over time, for Table 1 and Figure 2
+  for ( g in 1 : 2 ) {
+   for ( s in 1 : (N_SITES+1) ) {                  # also store sex-specific averages over *all* sites, needed for results Table
+     YLD.avg[g,s] <- mean(YLD.all[g,1:M,s])  # alt option would be to 1st average inc over period, then calc burden from avg inc...
+     YLL.avg[g,s] <- mean(YLL.all[g,1:M,s])
+     DALY.avg[g,s] <- mean(DALY.all[g,1:M,s])
+     YLD.avg.recent[g,s] <- mean(YLD.all[g,(M-3):M,s])
+     YLL.avg.recent[g,s] <- mean(YLL.all[g,(M-3):M,s])
+     DALY.avg.recent[g,s] <- mean(DALY.all[g,(M-3):M,s])
+   }
+   YLD.avg.GW[g] <- mean(YLD.all.GW[g,1:M])               # needed only for Table 1
+   YLD.avg.recent.GW[g] <- mean(YLD.all.GW[g,(M-3):M])   # needed only for Table 1
+   DALY.avg.recent.exclOCLA[g] <- mean(DALY.all.exclOCLA[g,(M-3):M])  # needed only for Results text
+  }
+  YLD.avg.exclCE <- mean(YLD.all.exclCE[1:M])             # these 6 nodes for ALL-SITES-EXCL-CE TOTAL, for Table 1
+  YLL.avg.exclCE <- mean(YLL.all.exclCE[1:M])             # [] NECESSARY!
+  DALY.avg.exclCE <- mean(DALY.all.exclCE[1:M])
+  YLD.avg.recent.exclCE <- mean(YLD.all.exclCE[(M-3):M])
+  YLL.avg.recent.exclCE <- mean(YLL.all.exclCE[(M-3):M])
+  DALY.avg.recent.exclCE <- mean(DALY.all.exclCE[(M-3):M])
+  YLD.avg.CIN23 <- mean(YLD.all.CIN23[2,1:M])             # needed only for Table 1
+  YLD.avg.recent.CIN23 <- mean(YLD.all.CIN23[2,(M-3):M]) # needed only for Table 1
+
+  # Summed over site, mean over time, for Figure 3a & 3b
+  for ( g in 1 : 2 ) {
+   for ( a in 1 : N_AGE_GROUPS ) {
+    for ( y in 1 : M) {
+      YLD[g,a,y,(N_SITES+1)] <- sum(YLD[g,a,y,1:N_SITES])     # sum over site (RAN_AGE_GROUPSE 1:N_SITES VITAL! or stack overflow), store in '9'
+      YLL[g,a,y,(N_SITES+1)] <- sum(YLL[g,a,y,1:N_SITES])
+      DALY[g,a,y,(N_SITES+1)] <- sum(DALY[g,a,y,1:N_SITES])
+    }
+    YLD.age[g,a] <- mean(YLD[g,a,1:M,(N_SITES+1)])      # mean over time  NB. since no Poisson error at agegrp level, narrower CrIs
+    YLL.age[g,a] <- mean(YLL[g,a,1:M,(N_SITES+1)])
+    DALY.age[g,a] <- mean(DALY[g,a,1:M,(N_SITES+1)])
+    YLD.age.GW[g,a] <- mean(YLD.GW[g,a,1:M])       # mean over time for GW in new variable
+    YLD.age.CIN23[g,a] <- mean(YLD.CIN23[g,a,1:M]) # mean over time for CIN23 in new variable
+   }
+  }
+  # Summed over site, mean over time  FEMALES ONLY, *CANCERS* only, EXCLUDIN_AGE_GROUPS CE SITE! FOR Figure 2c ONLY
+  for ( a in 1 : N_AGE_GROUPS ) {
+   for ( y in 1 : M) {
+     YLD.sum.exclCE[a,y] <- sum(YLD[2,a,y,2:(N_SITES-1)])   
+     YLL.sum.exclCE[a,y] <- sum(YLL[2,a,y,2:(N_SITES-1)])
+     DALY.sum.exclCE[a,y] <- sum(DALY[2,a,y,2:(N_SITES-1)])
+   }
+   YLD.age.exclCE[a] <- mean(YLD.sum.exclCE[a,])       # ADHOC var for plot only, excl. cervix site from aggregated total
+   YLL.age.exclCE[a] <- mean(YLL.sum.exclCE[a,])
+   DALY.age.exclCE[a] <- mean(DALY.sum.exclCE[a,])
+  }
+
+  # ADHOC vars for plotting: only DALY by subtype and over time; age- and site-aggregated
+  for( y in 1 : M ) {
+   for( subtype in 1 : 4 ) {
+    for( g in 1 : 2 ) {
+     for( s in 1 : N_SITES ) {
+      # Below is 'interim' variable; in next subsequent statement it is summed over site
+      DALY.all.type[g,y,subtype,s] <- DALY.all[g,y,s]*pType[subtype,s]
+     }
+     DALY.type[g,y,subtype] <- sum(DALY.all.type[g,y,subtype,1:N_SITES]) + YLD.all.GW[g,y]*pType[subtype,(N_SITES+1)] # prop. for GW stored in index 9
+    }
+    DALY.type.exclCE[y,subtype] <- sum(DALY.all.type[2,y,subtype,2:N_SITES]) + YLD.all.GW[2,y]*pType[subtype,(N_SITES+1)]
+   }
+  }
+}

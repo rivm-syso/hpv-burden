@@ -1,0 +1,27 @@
+Package: hpvburden
+Title: HPV burden of disease calculations per year, sex and age group
+Version: 0.0.9
+Authors@R: 
+    c(person("Rijksinstituut voor Volksgezondheid en Milieu (RIVM)", "", email = " info@rivm.nl", role = c("cph", "fnd", "cre")))
+Description: Estimate HPV burden in Bayesian context for uncertainty propagation. 
+    Calculation is done for the burden of disease calculation for the report on 
+    The National Immunisation Programme in the Netherlands. Surveillance and
+    developments.  
+License: EUPL v1.2 + file LICENSE
+Encoding: UTF-8
+Roxygen: list(markdown = TRUE)
+RoxygenNote: 7.3.2
+Suggests: 
+    knitr,
+    rmarkdown
+VignetteBuilder: knitr
+Imports: 
+    cbsodataR (>= 1.1),
+    coda (>= 0.19),
+    dplyr (>= 1.1.4),
+    fs (>= 1.6.4),
+    ggplot2 (>= 2.3.5),
+    readxl (>= 1.4.3),
+    runjags (>= 2.2.2),
+    tibble (>= 3.2.1),
+    tidyr (>= 1.3.1)
